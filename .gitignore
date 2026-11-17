@@ -1,0 +1,34 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Local browser/download artifacts and generated inspection output
+.firecrawl/
+.artifacts/*
+!.artifacts/direction/
+.artifacts/direction/*
+!.artifacts/direction/generated/
+.artifacts/direction/generated/*
+!.artifacts/direction/generated/01-master.png
+!.artifacts/direction/generated/02-terrain-mask.png
+
+# Local runtime/editor state
+.pi/
+.unipi/
+.vscode/
+.idea/
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Local generation-session history (may contain private conversation URLs/prompts)
+docs/ART_GENERATION_LOG.md
+docs/ART_GENERATION_REQUESTS.json
+
+# Local environment credentials (allow checked-in examples)
+.env
+.env.*
+!.env.example
+!.env.template

@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "grid": "640x360",
+  "dimensions": {
+    "width": 640,
+    "height": 360
+  },
+  "source": {
+    "file": ".artifacts/direction/generated/01-master.png",
+    "sha256": "da36518a45bea8cfb4ad4f33bd69ffce546c3a012e639047648af3c22e68028a",
+    "dimensions": {
+      "width": 1672,
+      "height": 941
+    }
+  },
+  "segmentationGuide": {
+    "file": ".artifacts/direction/generated/02-terrain-mask.png",
+    "sha256": "62a550fcff0d984e8e0300c48dda0029a2d3cf3e985c463db102a840e5ae8454",
+    "role": "magenta-key geometry guide; final water additionally requires master teal/shadow chroma"
+  },
+  "normalization": {
+    "method": "crop one bottom source row to 1672x940 exact 16:9, then direct nearest-neighbor resample; no squashing, no upscaling from old baseline",
+    "crop": {
+      "left": 0,
+      "top": 0,
+      "width": 1672,
+      "height": 940
+    },
+    "resize": "nearest"
+  },
+  "palette": {
+    "target": 64,
+    "actualEnvironmentalColors": 64,
+    "quantizer": "deterministic weighted median-cut with nearest-color assignment",
+    "dithering": "none",
+    "appliedTo": "environment RGB; original.png retains source color appearance after nearest resampling"
+  },
+  "alpha": {
+    "original": "255 everywhere",
+    "environment": "0 exactly on mask water pixels; 255 on land",
+    "masks": "opaque binary grayscale (0 or 255)"
+  },
+  "water": {
+    "segmentation": "terrain magenta key AND master teal/shadow chroma (G>R+11, B>R+12, abs(G-B)<43, G<175)",
+    "sourceCoverage": 0.24638285147103736,
+    "outputCoverage": 0.24633680555555557,
+    "sourceGuidePixels": 438263,
+    "outputPixels": 56756
+  },
+  "motion": {
+    "coordinateSpace": "nearest-resampled source-master pixel coordinates, scaled directly to this grid",
+    "maskSemantics": "opaque grayscale; white=eligible source pixels, black=other; masks are conservative spatial/color segmentation, not independent cutouts",
+    "files": [
+      "canopy-motion-mask.png",
+      "roots-motion-mask.png",
+      "lotus-motion-mask.png"
+    ],
+    "canopy": "green pixels clipped to the dense left banyan crown/trunk area (source x<175,y<150); still a mask-only source, not a detached crown sprite",
+    "roots": "warm pixels inside a compact lower buttress-root polygon ending above the planter wall; excludes outer masonry/ground but is still a mask-only source",
+    "lotus": "bright leaf/petal pixels inside two pond-side ROIs above the foreground barrier; mask only, no sprite/cutout/underpaint generated. Deform subtly in-place only or keep anchored to avoid gaps/ghosts.",
+    "reflectionAnchors": {
+      "rearBankY": 198,
+      "pondLeftShore": "follow white/black mask boundary",
+      "pondRightShore": "follow white/black mask boundary",
+      "lotusForeground": "lower-side pond-edge groups, mask only"
+    }
+  },
+  "reflectionPlanes": [
+    {
+      "id": "rear-pond-bank",
+      "y": 198,
+      "xStart": 200,
+      "xEnd": 639
+    }
+  ],
+  "motionMaskCoverage": {
+    "canopy-motion-mask.png": 0.07802951388888889,
+    "roots-motion-mask.png": 0.012274305555555556,
+    "lotus-motion-mask.png": 0.009973958333333333
+  },
+  "sourceHashes": {
+    "masterSha256": "da36518a45bea8cfb4ad4f33bd69ffce546c3a012e639047648af3c22e68028a",
+    "terrainGuideSha256": "62a550fcff0d984e8e0300c48dda0029a2d3cf3e985c463db102a840e5ae8454"
+  }
+}
