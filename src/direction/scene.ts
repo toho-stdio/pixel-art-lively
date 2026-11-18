@@ -1,6 +1,7 @@
 import type { StudyCamera, StudyScene } from '../study/types';
 import { directionMotionSource, type DirectionMotionMaterial } from './motion';
 import { lotusReflectionSourceY } from './lotus-rig';
+import { validateFoliageWrite } from './foliage-isolation';
 
 export interface DirectionMetadata {
   version?: string;
@@ -15,6 +16,8 @@ export interface DirectionScene extends StudyScene {
   metadata?: DirectionMetadata;
   /** Optional water-only source canvas carrying current lotus poses into the rear-plane sampler. */
   renderReflectionObjects?(time: number, wind: number): HTMLCanvasElement;
+  /** Expensive, opt-in audit surface; never evaluated by the standard render loop. */
+  foliageDebug?(time: number, wind: number): { source: Uint8Array; destination: Uint8Array; owners: Uint8Array; underpaint: Uint8Array; finalDry: HTMLCanvasElement };
   dispose(): void;
 }
 
@@ -71,7 +74,7 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
   const key = `${width}x${height}`;
   if (!SUPPORTED.has(key)) throw new Error(`Direction scene supports ${[...SUPPORTED].join(' and ')} only; requested ${key}`);
   const root = `/art-direction/${key}/`;
-  const [originalPixels, environmentPixels, maskPixels, motionResults, canopyUnderplateResult, metadataResult] = await Promise.all([
+  const [originalPixels, environmentPixels, maskPixels, motionResults, canopyUnderplateResult, strandUnderplateResult, ownerResult, metadataResult] = await Promise.all([
     loadPixels(`${root}original.png`, width, height),
     loadPixels(`${root}environment.png`, width, height),
     loadPixels(`${root}mask.png`, width, height),
@@ -84,6 +87,8 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
       }
     })),
     loadPixels(`${root}canopy-underplate.png`, width, height),
+    loadPixels(`${root}aerial-strands-underplate.png`, width, height),
+    loadPixels(`${root}foliage-protected-owners.png`, width, height),
     fetch(`${root}metadata.json`).then(async (response) => {
       if (response.status === 404) return undefined;
       if (!response.ok) throw new Error(`Unable to load direction metadata ${root}metadata.json: HTTP ${response.status}`);
@@ -92,6 +97,13 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
   ]);
   const metadata = metadataResult;
   const count = width * height;
+  const ownerIds = new Uint8Array(count);
+  for (let i = 0; i < count; i++) {
+    const p = i * 4, id = ownerResult.data[p];
+    if (ownerResult.data[p + 3] !== 255 || ownerResult.data[p + 1] !== id || ownerResult.data[p + 2] !== id || id > 4)
+      throw new Error(`Invalid authored foliage owner mask at (${i % width},${Math.floor(i / width)})`);
+    ownerIds[i] = id;
+  }
   const mask = new Uint8Array(count);
   const bankY = new Int16Array(width);
   bankY.fill(height);
@@ -142,27 +154,13 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
   // Paint a compact undercoat beneath cutout motion regions. At zero wind the dynamic plate
   // exactly restores the canonical pixels; at nonzero wind this prevents a duplicated ghost.
   for (let i = 0; i < count; i++) {
-    if (motionAt[i] < 0) continue;
-    const x = i % width, y = Math.floor(i / width), p = i * 4;
-    let r = 0, g = 0, b = 0, n = 0;
-    for (let radius = 1; radius <= 4 && n === 0; radius++) {
-      for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
-        const xx = x + dx, yy = y + dy;
-        if (xx < 0 || yy < 0 || xx >= width || yy >= height || motionAt[yy * width + xx] >= 0) continue;
-        const q = (yy * width + xx) * 4;
-        r += originalPixels.data[q]; g += originalPixels.data[q + 1]; b += originalPixels.data[q + 2]; n++;
-      }
-    }
-    if (motionAt[i] === 0 && canopyUnderplateResult.data[p + 3] === 255) {
-      groundPixels.data[p] = canopyUnderplateResult.data[p];
-      groundPixels.data[p + 1] = canopyUnderplateResult.data[p + 1];
-      groundPixels.data[p + 2] = canopyUnderplateResult.data[p + 2];
-    } else if (n) {
-      groundPixels.data[p] = Math.round(r / n);
-      groundPixels.data[p + 1] = Math.round(g / n);
-      groundPixels.data[p + 2] = Math.round(b / n);
-    }
+    if (motionAt[i] !== 0 || ownerIds[i] !== 0) continue;
+    const p = i * 4;
+    const underpaint = motionAt[i] === 0 ? canopyUnderplateResult.data : strandUnderplateResult.data;
+    if (underpaint[p + 3] !== 255) throw new Error(`Missing generated underpaint for moving source pixel (${i % width},${Math.floor(i / width)})`);
+    groundPixels.data[p] = underpaint[p];
+    groundPixels.data[p + 1] = underpaint[p + 1];
+    groundPixels.data[p + 2] = underpaint[p + 2];
   }
   groundContext.putImageData(groundPixels, 0, 0);
 
@@ -179,6 +177,8 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
   const reflectionContext = reflectionObjects.getContext('2d', { willReadFrequently: true });
   if (!reflectionContext) throw new Error('Canvas 2D is unavailable');
   const layerForPixel = (i: number): number => motionAt[i];
+  const foliageEligible = new Uint8Array(count);
+  for (let i = 0; i < count; i++) if (motionAt[i] === 0 || motionAt[i] === 3) foliageEligible[i] = 255;
   let disposed = false;
   let lastObjectFrame = '';
   const renderObjects = (time: number, wind: number): HTMLCanvasElement => {
@@ -204,6 +204,7 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
       if (source.x < 0 || source.y < 0 || source.x >= width || source.y >= height) continue;
       const sourceI = source.y * width + source.x;
       if (motionAt[sourceI] !== m) continue;
+      if (!validateFoliageWrite(sourceI, i, width, height, foliageEligible, ownerIds).accepted) continue;
       const p = sourceI * 4, dst = i * 4;
       foregroundFrame.data[dst] = originalPixels.data[p]; foregroundFrame.data[dst + 1] = originalPixels.data[p + 1];
       foregroundFrame.data[dst + 2] = originalPixels.data[p + 2]; foregroundFrame.data[dst + 3] = 255;
@@ -273,9 +274,33 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
     return reflectionObjects;
   };
 
+  const foliageDebug = (time: number, wind: number) => {
+    const live = renderObjects(time, wind);
+    const source = new Uint8Array(count), destination = new Uint8Array(count), underpaint = new Uint8Array(count);
+    for (let i = 0; i < count; i++) {
+      if (motionAt[i] === 0 || motionAt[i] === 3) source[i] = 255;
+      if ((motionAt[i] === 0 && canopyUnderplateResult.data[i * 4 + 3] === 255) || (motionAt[i] === 3 && strandUnderplateResult.data[i * 4 + 3] === 255)) underpaint[i] = 255;
+    }
+    // Derive the actual inverse-sampled pose destination (debug-only O(width*height)).
+    for (let dst = 0; dst < count; dst++) {
+      const x = dst % width, y = Math.floor(dst / width);
+      for (const [material, layer] of [['canopy', 0], ['aerial-strands', 3]] as const) {
+        const sample = directionMotionSource(material, x, y, width, height, time, wind);
+        if (sample.x < 0 || sample.y < 0 || sample.x >= width || sample.y >= height) continue;
+        const src = sample.y * width + sample.x;
+        if (motionAt[src] === layer && validateFoliageWrite(src, dst, width, height, foliageEligible, ownerIds).accepted)
+          destination[dst] = 255;
+      }
+    }
+    const finalDry = makeCanvas(width, height);
+    const c = finalDry.getContext('2d');
+    if (!c) throw new Error('Canvas 2D is unavailable');
+    c.drawImage(ground, 0, 0); c.drawImage(live, 0, 0); c.drawImage(foreground, 0, 0);
+    return { source, destination, owners: ownerIds.slice(), underpaint, finalDry };
+  };
   const camera: StudyCamera = { width, height, scale: height / 360, offsetX: 0 };
   return {
-    ground, foreground, mask, bankY, renderObjects, renderReflectionObjects, camera, original, metadata,
+    ground, foreground, mask, bankY, renderObjects, renderReflectionObjects, foliageDebug, camera, original, metadata,
     dispose() {
       disposed = true;
       for (const canvas of [original, ground, foreground, objects, reflectionObjects]) { canvas.width = 0; canvas.height = 0; }

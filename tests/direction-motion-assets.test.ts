@@ -73,7 +73,15 @@ describe('direction material-aware motion assets', () => {
     assert.match(meta.motion.aerialRootStrands, /upper attachment rows are pinned/);
     assert.match(meta.motion.lotusStems, /pinned at lower visible shoreline\/leaf attachment/);
     assert.match(meta.motion.lotusLeaves, /three bounded green leaf\/pad components/);
-    assert.match(meta.motion.canopy, /all visible foliage in four semantic zones/);
+    assert.match(meta.motion.canopy, /eligible foliage pixels selected in four semantic zones/);
+    assert.match(meta.motion.ownership.authoring, /not derived from movement eligibility/);
     assert.match(meta.motion.canopyUnderplate, /canopy-underplate\.png/);
+    assert.match(meta.motion.strandUnderplate, /aerial-strands-underplate\.png/);
+    const owner = await decode('foliage-protected-owners.png');
+    const strandUnderplate = await sharp(path.join(dir, 'aerial-strands-underplate.png')).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    assert.equal(strandUnderplate.info.width, grid.width); assert.equal(strandUnderplate.info.height, grid.height);
+    for (let p = 0; p < strands.length; p++) {
+      assert.equal(strandUnderplate.data[p * 4 + 3], strands[p] && owner[p] === 0 ? 255 : 0, 'strand underpaint alpha exactly follows independently safe strand source mask');
+    }
   });
 });

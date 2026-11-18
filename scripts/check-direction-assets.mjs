@@ -77,19 +77,49 @@ for (const grid of grids) {
     else if (name === 'canopy-motion-mask.png') assert(selected > count * 0.025 && selected < count * 0.30, `${grid.key}/${name}: broad foliage coverage outside expected material envelope ${selected}/${count}`);
     else assert(selected > 8 && selected < count * 0.15, `${grid.key}/${name}: unexpected mask coverage ${selected}/${count}`);
   }
+  const ownerImage = await rgba(path.join(dir, 'foliage-protected-owners.png'));
+  assert(ownerImage.info.width === grid.width && ownerImage.info.height === grid.height, `${grid.key}/foliage-protected-owners.png: not native size`);
+  const canopyMask = await rgba(path.join(dir, 'canopy-motion-mask.png'));
+  const strandMask = await rgba(path.join(dir, 'aerial-root-strands-motion-mask.png'));
   const underplate = await rgba(path.join(dir, 'canopy-underplate.png'));
+  const strandUnderplate = await rgba(path.join(dir, 'aerial-strands-underplate.png'));
   const canopy = await rgba(path.join(dir, 'canopy-motion-mask.png'));
   assert(underplate.info.width === grid.width && underplate.info.height === grid.height, `${grid.key}/canopy-underplate.png: not native size`);
-  let underplatePixels = 0;
+  let underplatePixels = 0, strandUnderpaintPixels = 0;
+  let protectedFoliageOverlap = 0;
+  const ownerCounts = new Uint32Array(5);
   for (let p = 0; p < count; p++) {
     const i = p * 4, a = underplate.data[i + 3], selected = canopy.data[i] === 255;
+    const owner = ownerImage.data[i];
+    assert(ownerImage.data[i + 1] === owner && ownerImage.data[i + 2] === owner && ownerImage.data[i + 3] === 255 && owner <= 4, `${grid.key}/foliage-protected-owners.png: invalid authored owner ID at ${p}`);
+    ownerCounts[owner]++;
+    if (selected && owner !== 0) protectedFoliageOverlap++;
     assert(a === 0 || a === 255, `${grid.key}/canopy-underplate.png: nonbinary alpha at ${p}`);
-    assert((a === 255) === selected, `${grid.key}/canopy-underplate.png: alpha must exactly match canopy selection at ${p}`);
+    assert((a === 255) === (selected && owner === 0), `${grid.key}/canopy-underplate.png: alpha must match safe canopy selection only at ${p}`);
     if (a) underplatePixels++;
+    const strandAlpha = strandUnderplate.data[i + 3], strandSelected = strandMask.data[i] === 255;
+    assert(strandAlpha === 0 || strandAlpha === 255, `${grid.key}/aerial-strands-underplate.png: nonbinary alpha at ${p}`);
+    assert((strandAlpha === 255) === (strandSelected && owner === 0), `${grid.key}/aerial-strands-underplate.png: alpha must match safe strand selection at ${p}`);
+    if (strandAlpha) strandUnderpaintPixels++;
   }
-  assert(underplatePixels > count * 0.025, `${grid.key}: derived canopy underplate too small`);
-  assert(metadata.motion?.canopy?.includes('all visible foliage in four semantic zones'), `${grid.key}: whole-visible-foliage coverage semantics missing`);
+  assert(strandUnderplate.info.width === grid.width && strandUnderplate.info.height === grid.height, `${grid.key}/aerial-strands-underplate.png: not native size`);
+  assert(ownerCounts[1] > 0 && ownerCounts[2] > 0 && ownerCounts[3] > 0 && ownerCounts[4] > 0, `${grid.key}: one or more independently authored owner silhouettes are empty (${Array.from(ownerCounts)})`);
+  const canopyRegions = [[0, 316, 0, 134], [155, 557, 0, 105], [203, 380, 73, 170], [615, 640, 0, 151]];
+  for (let r = 0; r < canopyRegions.length; r++) {
+    const [x0, x1, y0, y1] = canopyRegions[r]; let selectedInRegion = 0;
+    for (let p = 0; p < count; p++) if (canopy.data[p * 4] === 255) {
+      const sx = p % grid.width * 640 / grid.width, sy = Math.floor(p / grid.width) * 360 / grid.height;
+      if (sx >= x0 && sx < x1 && sy >= y0 && sy < y1) selectedInRegion++;
+    }
+    assert(selectedInRegion > 100, `${grid.key}: independently audited canopy region ${r} has only ${selectedInRegion} eligible pixels after ownership clipping`);
+  }
+  assert(protectedFoliageOverlap === 0, `${grid.key}: moving source overlaps independently protected owner at ${protectedFoliageOverlap} pixels`);
+  assert(underplatePixels > count * 0.01, `${grid.key}: derived canopy underplate too small after owner clipping`);
+  assert(strandUnderpaintPixels > 8, `${grid.key}: derived strand underplate missing`);
+  assert(metadata.motion?.canopy?.includes('eligible foliage pixels selected in four semantic zones'), `${grid.key}: eligible foliage coverage semantics missing`);
+  assert(metadata.motion?.ownership?.file === 'foliage-protected-owners.png' && metadata.motion?.ownership?.authoring?.includes('not derived from movement eligibility'), `${grid.key}: independent owner-mask provenance missing`);
   assert(metadata.motion?.canopyUnderplate?.includes('canopy-underplate.png'), `${grid.key}: derived canopy underplate metadata missing`);
+  assert(metadata.motion?.strandUnderplate?.includes('aerial-strands-underplate.png'), `${grid.key}: derived strand underplate metadata missing`);
   assert(metadata.reflectionPlanes?.length === 1, `${grid.key}: expected one fixed rear reflection plane`);
   const plane = metadata.reflectionPlanes[0];
   assert(plane.id === 'rear-pond-bank' && plane.y === grid.bankY && plane.xStart === grid.xStart && plane.xEnd === grid.width - 1, `${grid.key}: rear reflection plane mismatch`);

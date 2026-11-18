@@ -26,7 +26,7 @@ const canopyWindClusters = [
   { id: 'banyan-left-crown', polygon: [[0, 0], [90, 0], [178, 0], [216, 12], [258, 7], [297, 28], [316, 62], [301, 91], [267, 111], [230, 106], [203, 126], [158, 109], [114, 128], [65, 134], [20, 126], [0, 105]] },
   { id: 'banyan-overhead-crown', polygon: [[155, 0], [250, 0], [343, 0], [421, 0], [507, 0], [557, 18], [544, 54], [506, 76], [467, 65], [425, 92], [384, 78], [343, 100], [304, 82], [285, 54], [244, 39], [203, 52], [176, 34]] },
   { id: 'middle-background-trees', polygon: [[203, 85], [240, 73], [276, 88], [305, 79], [337, 92], [360, 112], [380, 142], [355, 170], [316, 163], [290, 151], [262, 164], [234, 148], [212, 126]] },
-  { id: 'right-bank-background-tree', polygon: [[555, 0], [639, 0], [639, 137], [618, 151], [599, 126], [575, 110], [562, 77], [544, 47]] },
+  { id: 'right-bank-background-tree', polygon: [[615, 0], [639, 0], [639, 137], [618, 151], [599, 126], [575, 110], [562, 77], [544, 47]] },
 ];
 // Hand-bounded native source geometry for the clear pond-side lotus pair only. Components
 // are restricted to this one plant cluster; occluded right-bank blooms are deliberately excluded.
@@ -42,6 +42,17 @@ const lotusLeafRegions = [
 const lotusStemRegions = [
   { id: 'main', polygon: [[139, 281], [143, 281], [143, 292], [139, 292]] },
   { id: 'bud', polygon: [[162, 278], [166, 278], [166, 291], [162, 291]] },
+];
+// Independent art-authored no-motion silhouettes in 640x360 source coordinates.
+// These owner profiles are not derived from/inverse to a candidate movement mask.
+const protectedOwners = [
+  { id: 1, owner: 'roofAndHouse', polygon: [[330, 132], [341, 121], [337, 110], [350, 101], [348, 91], [366, 82], [374, 63], [397, 56], [407, 67], [426, 56], [440, 68], [459, 56], [476, 66], [495, 53], [512, 63], [533, 54], [550, 66], [578, 73], [598, 91], [614, 117], [619, 145], [610, 159], [608, 226], [331, 226], [331, 151]] },
+  { id: 2, owner: 'banyanStructure', polygon: [[69, 81], [114, 66], [148, 74], [169, 95], [209, 98], [232, 82], [270, 84], [299, 99], [316, 112], [299, 137], [275, 137], [249, 159], [226, 181], [205, 221], [169, 244], [118, 250], [78, 226]] },
+  { id: 3, owner: 'planterAndShore', polygon: [[0, 215], [80, 215], [80, 300], [0, 300]] },
+  { id: 3, owner: 'planterAndShore', polygon: [[190, 215], [330, 215], [330, 300], [190, 300]] },
+  { id: 3, owner: 'planterAndShore', polygon: [[0, 300], [640, 300], [640, 360], [0, 360]] },
+  { id: 4, owner: 'fixedLotus', polygon: [[440, 267], [474, 267], [488, 281], [486, 296], [474, 299], [448, 299], [438, 286]] },
+  { id: 4, owner: 'fixedLotus', polygon: [[559, 264], [591, 264], [603, 279], [603, 296], [590, 299], [566, 299], [556, 284]] },
 ];
 const insidePolygon = (x, y, polygon) => {
   let inside = false;
@@ -113,6 +124,7 @@ for (const grid of sizes) {
   const pixels = grid.width * grid.height;
   const env = Buffer.alloc(pixels * 4), original = Buffer.alloc(pixels * 4);
   const maskRgba = Buffer.alloc(pixels * 4);
+  const protectionOwners = Buffer.alloc(pixels);
   const masks = {
     'canopy-motion-mask.png': Buffer.alloc(pixels),
     'roots-motion-mask.png': Buffer.alloc(pixels), // heavy trunk and buttress roots are intentionally anchored
@@ -137,13 +149,15 @@ for (const grid of sizes) {
     const nx = p % grid.width, ny = Math.floor(p / grid.width);
     const sx = nx * 640 / grid.width, sy = ny * 360 / grid.height;
     const h = rgbHue(r, g, b);
-    if (canopyWindClusters.some((region) => insidePolygon(sx, sy, region.polygon))
+    const protectedOwner = protectedOwners.find((owner) => insidePolygon(sx, sy, owner.polygon));
+    protectionOwners[p] = protectedOwner?.id ?? 0;
+    if (!protectedOwner && canopyWindClusters.some((region) => insidePolygon(sx, sy, region.polygon))
       && h >= 26 && h <= 158 && g > 24 && g > r * 0.72 && g > b * 0.58)
       masks['canopy-motion-mask.png'][p] = 255;
     // Heavy trunk/buttress pixels are not eligible for motion: that whole mass stays fixed.
     // Select only four narrow, visually verified hanging strands under the horizontal bough.
     const strandBands = [[275, 277, 64, 116], [312, 314, 62, 120], [319, 321, 64, 120], [337, 339, 69, 113]];
-    if (strandBands.some(([x0, x1, y0, y1]) => sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1)
+    if (!protectedOwner && strandBands.some(([x0, x1, y0, y1]) => sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1)
       && Math.max(r, g, b) < 110 && (r > g * 1.08 || (Math.abs(r - g) < 32 && Math.abs(g - b) < 32)) && sy > 68)
       masks['aerial-root-strands-motion-mask.png'][p] = 255;
     // Three individually identified parts of one clear left lotus pair. Heads use the tight
@@ -167,33 +181,36 @@ for (const grid of sizes) {
       masks['lotus-leaves-motion-mask.png'][p] = 255;
   }
   if (palette.size > 64) throw new Error(`${grid.key}: got ${palette.size} environmental colors`);
-  // Precisely derived dynamic underplate: transparent except at moving canopy source pixels,
-  // where a 4-native-pixel ring average of immediately adjacent non-moving canonical art
-  // reconstructs the tiny cutouts without modifying the approved source/environment plates.
-  const canopyUnderplate = Buffer.alloc(pixels * 4);
-  const canopyMask = masks['canopy-motion-mask.png'];
-  for (let p = 0; p < pixels; p++) {
-    if (canopyMask[p] !== 255) continue;
-    const x = p % grid.width, y = Math.floor(p / grid.width);
-    let rr = 0, gg = 0, bb = 0, n = 0;
-    for (let radius = 1; radius <= 4 && n === 0; radius++) {
-      for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
-        const xx = x + dx, yy = y + dy;
-        if (xx < 0 || yy < 0 || xx >= grid.width || yy >= grid.height) continue;
-        const q = yy * grid.width + xx;
-        if (canopyMask[q] || maskRgba[q * 4] === 255) continue;
-        const s = q * 4; rr += resizedMaster.data[s]; gg += resizedMaster.data[s + 1]; bb += resizedMaster.data[s + 2]; n++;
+  // Derived native-grid hidden underpaint for both moving foliage cutouts. Local ring
+  // samples exclude every moving source, water, and independently protected owner.
+  const movingUnion = Buffer.alloc(pixels);
+  for (const layer of Object.values(masks)) for (let p = 0; p < pixels; p++) if (layer[p] === 255) movingUnion[p] = 255;
+  const makeUnderplate = (selectedMask) => {
+    const output = Buffer.alloc(pixels * 4);
+    for (let p = 0; p < pixels; p++) {
+      if (selectedMask[p] !== 255) continue;
+      const x = p % grid.width, y = Math.floor(p / grid.width);
+      let rr = 0, gg = 0, bb = 0, n = 0;
+      for (let radius = 1; radius <= 4 && n === 0; radius++) {
+        for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+          const xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= grid.width || yy >= grid.height) continue;
+          const q = yy * grid.width + xx;
+          if (movingUnion[q] || maskRgba[q * 4] === 255 || protectionOwners[q] !== 0) continue;
+          const s = q * 4; rr += resizedMaster.data[s]; gg += resizedMaster.data[s + 1]; bb += resizedMaster.data[s + 2]; n++;
+        }
       }
+      const d = p * 4, source = p * 4;
+      output[d] = n ? Math.round(rr / n) : resizedMaster.data[source];
+      output[d + 1] = n ? Math.round(gg / n) : resizedMaster.data[source + 1];
+      output[d + 2] = n ? Math.round(bb / n) : resizedMaster.data[source + 2];
+      output[d + 3] = 255;
     }
-    const d = p * 4, source = p * 4;
-    // At outer crown edges the bounded ring can be entirely selected; retain the canonical
-    // sample as a conservative fallback rather than leaving a transparent hole in the layer.
-    canopyUnderplate[d] = n ? Math.round(rr / n) : resizedMaster.data[source];
-    canopyUnderplate[d + 1] = n ? Math.round(gg / n) : resizedMaster.data[source + 1];
-    canopyUnderplate[d + 2] = n ? Math.round(bb / n) : resizedMaster.data[source + 2];
-    canopyUnderplate[d + 3] = 255;
-  }
+    return output;
+  };
+  const canopyUnderplate = makeUnderplate(masks['canopy-motion-mask.png']);
+  const strandUnderplate = makeUnderplate(masks['aerial-root-strands-motion-mask.png']);
   const toRgba = (data) => sharp(data, { raw: { width: grid.width, height: grid.height, channels: 4 } }).png({ compressionLevel: 9 });
   await Promise.all([
     ...(motionOnly ? [] : [
@@ -202,7 +219,9 @@ for (const grid of sizes) {
       toRgba(maskRgba).toFile(path.join(baseDir, 'mask.png')),
     ]),
     ...Object.entries(masks).map(([name, data]) => sharp(data, { raw: { width: grid.width, height: grid.height, channels: 1 } }).png({ compressionLevel: 9 }).toFile(path.join(baseDir, name))),
+    sharp(protectionOwners, { raw: { width: grid.width, height: grid.height, channels: 1 } }).png({ compressionLevel: 9 }).toFile(path.join(baseDir, 'foliage-protected-owners.png')),
     toRgba(canopyUnderplate).toFile(path.join(baseDir, 'canopy-underplate.png')),
+    toRgba(strandUnderplate).toFile(path.join(baseDir, 'aerial-strands-underplate.png')),
   ]);
   const counts = Object.fromEntries(Object.entries(masks).map(([name, data]) => [name, data.reduce((n, v) => n + (v === 255), 0)]));
   const meta = {
@@ -217,8 +236,10 @@ for (const grid of sizes) {
       coordinateSpace: 'nearest-resampled source-master pixel coordinates, scaled directly to this grid',
       maskSemantics: 'opaque grayscale; white=eligible source pixels, black=other; moving strands are narrowly selected from the source plate with fixed upper attachments; heavy roots are separately asserted anchored',
       files: Object.keys(masks),
-      canopy: 'all visible foliage in four semantic zones: full banyan crown, overhead connected banyan crown, middle background tree crowns, and right-bank background tree; polygon ROIs plus constrained foliage hue/material test exclude roof, masonry, moss, and lotus pads; trunk/boughs remain fixed',
-      canopyUnderplate: 'canopy-underplate.png is a native-grid, transparent-outside/opaque-inside 4-pixel-ring reconstruction derived from adjacent nonmoving canonical samples; used only behind moving foliage cutouts',
+      canopy: 'eligible foliage pixels selected in four semantic zones: banyan outer crown, overhead connected crown, middle-distance trees, and exposed far-right crown; independent owner silhouettes reject roof/house, banyan structural bough/trunk, planter/shore, and other fixed lotus destinations; overlapping flattened foliage remains fixed',
+      ownership: { file: 'foliage-protected-owners.png', encoding: 'opaque grayscale owner IDs: 0 free, 1 roof/house, 2 banyan structural trunk/bough, 3 planter/shore, 4 other fixed lotus clusters', authoring: 'independent hand-bounded 640x360 source-coordinate polygons uniformly projected to both native grids; not derived from movement eligibility', sourceAndDestination: 'both moving source and posed destination must have owner ID 0; destination writes into protected IDs are rejected' },
+      canopyUnderplate: 'canopy-underplate.png is a native-grid, transparent-outside/opaque-inside 4-pixel-ring reconstruction derived only from adjacent nonmoving, owner-free canonical samples; used only behind accepted canopy cutouts',
+      strandUnderplate: 'aerial-strands-underplate.png has the same native-grid binary-alpha provenance for the four accepted hanging-strand cutouts; all moving candidates, water, and protected owners are excluded from its local source rings',
       windResponse: 'tree foliage uses a 0.68 rad/s travelling regional phase and up to 3.74 native pixels at wind 1.5 (2.05px peak at default wind 0.6); lotus uses a 0.86 rad/s articulation cycle with 5.50px flower, 5.06px stem and 4.84px leaf peak at wind 1.5 (3.10/2.85/2.72px at default 0.6). Integer raster, shared regional field with small phase lags, wind clamped 0..1.5; zero wind exactly stationary.',
       roots: 'heavy trunk and buttress roots remain stationary; roots-motion-mask.png is empty by design',
       aerialRootStrands: 'four narrow, individually bounded dark hanging strands selected from canonical plate; upper attachment rows are pinned during wind deformation',
@@ -229,7 +250,7 @@ for (const grid of sizes) {
       reflectionAnchors: { rearBankY: Math.round(grid.height * 198 / 360), pondLeftShore: 'follow white/black mask boundary', pondRightShore: 'follow white/black mask boundary', lotusForeground: 'lower-side pond-edge groups, mask only' }
     },
     reflectionPlanes: [{ id: 'rear-pond-bank', y: Math.round(grid.height * 198 / 360), xStart: Math.round(grid.width * 200 / 640), xEnd: grid.width - 1 }],
-    motionMaskCoverage: { ...Object.fromEntries(Object.entries(counts).map(([name, n]) => [name, n / pixels])), 'canopy-underplate.png': canopyUnderplate.reduce((n, v, i) => n + (i % 4 === 3 && v === 255), 0) / pixels },
+    motionMaskCoverage: { ...Object.fromEntries(Object.entries(counts).map(([name, n]) => [name, n / pixels])), 'canopy-underplate.png': canopyUnderplate.reduce((n, v, i) => n + (i % 4 === 3 && v === 255), 0) / pixels, 'aerial-strands-underplate.png': strandUnderplate.reduce((n, v, i) => n + (i % 4 === 3 && v === 255), 0) / pixels },
     sourceHashes: { masterSha256: masterSha, terrainGuideSha256: guideSha }
   };
   await writeFile(path.join(baseDir, 'metadata.json'), JSON.stringify(meta, null, 2) + '\n');
