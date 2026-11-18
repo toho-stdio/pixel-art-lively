@@ -1,0 +1,34 @@
+# Visible motion and ambient ripple integration QA
+
+## Decision and scope
+
+Independent evaluator for the motion/ripple update on the isolated direction route. The approved Before plate remains the original static artwork; the live After renderer is deterministic simulation time. No video recording or encoding was done. Root `/` and `/study.html` remain separate.
+
+The source master, `original.png`, `environment.png`, and `mask.png` remain frozen to 3047513 at both native grids (the full hash audit is in `scripts/lotus-record-check.js`). This is a bounded rig: four foliage regions move; structural trunk/buttress, selected roof sample, and shore remain pinned. The flower, bud, two stem strips and three nearby pads/leaves in the left lotus group move. Other overlapping/right-bank lotus clusters remain static and are not described as rigged.
+
+## Visual review and evidence
+
+I inspected actual same-time ordered full-scene playback checkpoints (not just diff counters) at default wind 0.6. Before frames at t=0,5,10,15,20 are `.artifacts/direction/visible-motion/before/full-w06-t{0,5,10,15,20}.png`. The corresponding live After frames are under `.artifacts/direction/visible-motion/motion/` as `640x360-w0.6-t{0,5,10,15,20}.png` and `960x540-w0.6-t{0,5,10,15,20}.png`; captures also cover wind 0 and 1.5 at both grids. Full-view comparison screenshot: `.artifacts/direction/visible-motion/qa/clean-live-review.png`. Native magnified crops: `lotus-close-w06-t{0,5,10,15,20}-3x.png` and `canopy-close-w06-t{0,5,10,15,20}-2x.png` alongside the motion frames. Independent earlier QA has actual lower-scale close-up inspection and Before/After desktop/mobile review in `docs/LOTUS_RECORD_QA.md`.
+
+At overview, default-wind motion is temporally visible but remains deliberately localized rather than a whole-image wobble. All four visible tree-foliage zones have actual colored selected-material pixels changing across t=0→2.4: at 640, 29,945/29,983 left/outer banyan, 21,206/21,538 overhead banyan, 8,143/8,192 middle-distance trees and 5,113/5,561 right/background foliage; at 960, respectively 67,215/67,405, 46,981/48,496, 18,078/18,510 and 11,928/12,615. These measurements compare live object-canvas RGB(A) pixels restricted to the four distinct semantic masks; they are not union-mask-only assertions. The selected flower/stem/leaf material changes at t=0→2.4: 312/18/362 eligible changed pixels at 640 and 707/45/780 at 960.
+
+Maximum excursion at wind 0.6 is 2.05 native px for foliage and 3.10/2.85/2.72 px for lotus flower/stem/pads; at wind 1.5, 3.74 and 5.50/5.06/4.84 px. Cycle rates are 0.68 rad/s canopy and 0.86 rad/s lotus. The temporal sequence confirms periodic changes; zero-wind object frames remain byte-identical.
+
+## Automatic ripples
+
+`Gợn tự nhiên` is checked by default on the lively direction view. Seed `0xA0A1A` schedules water-only births every 4.8 seconds on average (seeded ±0.45 s timing variation), strength 1.38–1.57, lifetime 1.35 s; at most one new event per interval and existing renderer pool remains capped at 32. Rain/manual input are separate. Turning the control off blocks future ambient births; current rings finish their normal lifetime. Repeated fixed-time paused renders did not add births on either grid. Export uses the current frame without scheduling a birth. A fresh browser sequence with seed 1234, wind 0.6 and rain 0 observed births at t=11,16,21,26 and no more than one active ripple; disabling ambient then freezing at t=10 left zero active rings, re-enabling made subsequent scheduled births appear, and two same-time renders left the count unchanged. A trusted mouse click on an actual masked pond pixel at t=0 raised the count 0→1; a trusted land click left it at 1. Unit coverage for deterministic seed/time, invalid/empty masks, repeated/backward time, stale catch-up and bounded age is in `tests/direction-ambient-ripples.test.ts`; `docs/AMBIENT_RIPPLES.md` contains the implementation details and known limitations.
+
+## Added evaluator
+
+`agent-browser --session <named-session> eval --stdin < scripts/visible-motion-check.js` is a browser-level check on `/direction.html?compare=1`. It checks actual changed material pixels independently in all four canopy regions, lotus parts at default wind, zero-wind byte identity, pinned structural samples outside foliage-overlap zones, bounded deterministic repeated-time ripples, and 16:9 comparison readiness. It restores the initial resolution, wind/distortion/speed/rain/palette/effects, ambient toggle/seed, pause state and split. Latest run: **26/26 PASS**; observed region counts above. The test intentionally checks roof at x=400..540,y=110..145 to avoid the adjacent middle-tree and right-bank foliage that legitimately extend into broader former roof ROIs.
+
+Other integration coverage is recorded in `docs/LOTUS_RECORD_QA.md` and `docs/AMBIENT_RIPPLES.md`. After updating obsolete envelope/ROI semantics and distinguishing six water effect checkboxes from the separate ambient control, browser regression results on the visible-motion evaluator's isolated session were: lotus-record **107/107**, live-art **88/88**, polish-integration **70/70**, water polish **32/32**, renderer **23/23**, and home UI smoke **25/25**. The added visible-motion check was **26/26**. The initial failures were limited to a step-area ROI incorrectly searched in the reflectable object canvas (the actual step art resides in immutable ground/foreground layers) and an effect selector that counted the new ambient control as a seventh water effect; both were fixed without dropping the static-layer step check or any of the six effect checks.
+
+Latest project verification: `npm test` **27/27**, `npm run build` PASS, `node scripts/check-direction-assets.mjs` PASS on both grids, and `git diff --check` PASS. The clean route had zero horizontal overflow at 390 px mobile and 1440 px desktop. A trusted mouse drag moved comparison split 50→70 and updated its URL parameter without adding ripples (`0` before/after). Existing independent record QA documents slider keyboard endpoints, real water-vs-land click, actual PNG dimensions/block identity and attempted fullscreen; these were not all repeated in this final session.
+
+## Remaining limits
+
+- The four canopy regions denote bounded moving foliage masks, not every leaf individually rotoscoped; flattened occluded branches/plants remain attached to the approved plate.
+- The lotus motion scope is only the left flower/bud group and three adjacent pads, not every visible lotus.
+- Touch drag on physical hardware and successful fullscreen remain browser/device-dependent; prior QA could not validate physical touch, and headless fullscreen permission has failed. No video export or device profiling is claimed.
+- Pixel/frame checks demonstrate movement and anchoring, not user aesthetic acceptance; the user should still judge whether this is strong enough at normal playback scale.

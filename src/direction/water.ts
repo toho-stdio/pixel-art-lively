@@ -1,5 +1,6 @@
 import type { StudyScene } from '../study/types';
 import type { Settings, WaterRenderer } from '../types';
+import { attenuateReflectionTone, isArchitecturalContact, isLotusContact, sampleReflectionCluster } from './water-polish';
 
 // The direction scene offers three independent ten-color water ramps; land remains untouched.
 // Each ramp keeps dark mirror tones, mid-water hues, and reserved highlights distinct.
@@ -139,32 +140,35 @@ export function createDirectionWaterRenderer(scene: StudyScene): WaterRenderer {
           const sx = x + shift;
           const sy = Math.round(plane - mirrorRow / REFLECTION_SQUASH);
           if (sx >= 0 && sx < width && sy >= 0 && sy < height) {
-            const q = (sy * width + sx) * 4;
-            if (obj[q + 3] > 72) {
-              const lum = (obj[q] * 3 + obj[q + 1] * 6 + obj[q + 2]) / 10;
-              tone = lum < 20 ? 0 : lum < 70 ? 1 : lum < 95 ? 2 : lum < 120 ? 3
+            const cluster = sampleReflectionCluster(obj, width, height, sx, sy, mirrorRow / scale);
+            if (cluster) {
+              const lum = cluster.luminance;
+              const reflectedTone = lum < 20 ? 0 : lum < 70 ? 1 : lum < 95 ? 2 : lum < 120 ? 3
                 : lum < 155 ? 4 : lum < 185 ? 5 : lum < 215 ? 6 : 7;
+              tone = attenuateReflectionTone(reflectedTone, mirrorRow / scale);
             }
           }
-          // Reflected forms recede into a cool, lighter skylight toward the foreground.
-          // This broad luminance lift avoids invented sine blobs or interruption stripes.
-          const foregroundLift = Math.floor(Math.max(0, mirrorRow / scale - 72) / 58);
-          if (foregroundLift > 0) tone = Math.min(7, tone + foregroundLift);
         }
         if (settings.backBank && row >= 2 && row <= 9 && depthWorld < 4
-          && Math.sin(x * 0.16 / scale - t * 1.1) > 0.35 && (Math.floor(x / scale) + Math.floor(row)) % 4 !== 0) {
+          && hash(Math.floor(x / (8 * scale)), Math.floor(row / 4)) > 0.46
+          && (Math.floor(x / scale) + Math.floor(row)) % 4 !== 0) {
           const gy = bank - Math.round(row * scale);
           if (ground && gy >= 0) {
             const q = (gy * width + x) * 4;
-            tone = ground[q + 1] > ground[q] + 12 ? 4 : 8;
+            // Vegetation and stone remain distinguishable, but neither paints a continuous
+            // high-contrast stripe around the pond.
+            tone = ground[q + 1] > ground[q] + 12 ? 4 : 5;
           } else tone = 4;
         }
-        // Shoreline width is one native pixel at every density; run last so rear-bank
-        // illumination cannot erase this independently switchable edge treatment.
-        if (settings.shoreline && distance[p] <= 3) {
-          const dash = Math.sin(x * 0.18 / scale + y * 0.07 / scale - t * 1.2) + Math.sin(x * 0.055 / scale + t * 0.6);
-          if (dash > 1.12 && tone < 5) tone = 4;
-          else if (tone > 1) tone = 2;
+        // Selective dark contact at the stone-step / banyan-planter waterline. Unlike a
+        // global shoreline outline, only broken one-to-three-pixel marks are eligible.
+        if (settings.shoreline && (distance[p] <= 3 || isLotusContact(x, y, width, height, scale))) {
+          const architectural = distance[p] <= 3 && isArchitecturalContact(x, y, bank, width, scale);
+          const lotus = isLotusContact(x, y, width, height, scale);
+          const dash = hash(Math.floor(x / scale), Math.floor(y / scale));
+          if ((architectural && dash > 0.42) || (lotus && dash > 0.52)) tone = Math.min(tone, 1);
+          // Sparse, dim surface glints remain a distinct highlight treatment.
+          else if (!architectural && !lotus && dash > 0.94 && tone < 5) tone = 5;
         }
         indices[p] = tone;
       }

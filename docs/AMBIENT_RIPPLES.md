@@ -1,0 +1,15 @@
+# Gợn tự nhiên — direction review
+
+The direction route's live After view now seeds occasional ripples without pointer or rain input. **Gợn tự nhiên** is enabled by default in the review panel; clean recording mode adds no UI chrome. The approved Before/original art and ordinary static mode remain untouched.
+
+## Mechanism and bounds
+
+`src/direction/ambient-ripples.ts` is a pure deterministic schedule driven by simulation seconds and seed (`0xA0A1A` by default). Births average **4.8 simulation seconds apart**, with per-event deterministic timing jitter of ±0.45 seconds, plus a seeded initial phase and seeded water-mask positions. The bounded search is capped at 4096 samples. Each generated ripple uses the existing water renderer's lifecycle (1.35 seconds) and a bounded strength between 1.38 and 1.57 so the existing renderer uses its brighter ring tone. The schedule yields no more than one birth per interval, well below the renderer's existing 32-ripple cap. Effective visible rate can be lower if there is no valid water sample or particles are disabled.
+
+The caller tracks simulation time and a bounded set of eight event IDs. The pure schedule resolves the newest event still alive at the requested time; repeated timestamps cannot create a second ripple, backward seeks rebase the cursor and rebuild only the current visible event, and large forward gaps never replay history or create a catch-up burst. Hiding the tab does not advance simulation time. A new resolution gets a fresh renderer and can reconstruct only an event still within the visible age window. Paused animation naturally freezes both clock and ripples.
+
+Manual pointer/keyboard ripples and rain remain separate. `rippleCount` continues to report the renderer's total active ripple count (ambient + manual; rain drops are not ripples). The ambient toggle disables future ambient births but lets already-born rings finish their existing 1.35-second renderer lifetime; manual input and rain remain independent. The existing **Gợn & lá** particle-effect toggle still controls whether ripple rings are drawn at all. PNG export paints the current frame without scheduling a birth.
+
+For QA: `window.__LIVE_ART__.setAmbientEnabled(false/true)` toggles the feature; `setAmbientSeed(integer)` chooses a reproducible seed; `ambientEnabled` and `ambientSeed` expose current state. Existing APIs remain available. `freeze(t)` still renders and pauses at that simulation time; save/restore those ambient values with existing resolution/split/pause state in a QA harness.
+
+Browser evidence from the named `ambient-ripple-e57f26eeef18` session is in `.artifacts/direction/visible-motion/ambient/`: `review-page-full.png` shows the default-on native checkbox and full comparison review; `visible-ripple-19-5.png` captures a seeded active ripple at `t=19.5`; `grid-640x360.png` and `grid-960x540.png` document both grids. A frozen same-time browser check confirmed one active ripple remains one after repeated `render()` calls; export at paused time left both clock and ripple count unchanged. A trusted pointer click on the non-comparison review route created a manual ripple independently.

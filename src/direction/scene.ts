@@ -1,4 +1,6 @@
 import type { StudyCamera, StudyScene } from '../study/types';
+import { directionMotionSource, type DirectionMotionMaterial } from './motion';
+import { lotusReflectionSourceY } from './lotus-rig';
 
 export interface DirectionMetadata {
   version?: string;
@@ -11,17 +13,22 @@ export interface DirectionScene extends StudyScene {
   /** Unmodified canonical master at this exact native resolution, for static comparison. */
   original: HTMLCanvasElement;
   metadata?: DirectionMetadata;
+  /** Optional water-only source canvas carrying current lotus poses into the rear-plane sampler. */
+  renderReflectionObjects?(time: number, wind: number): HTMLCanvasElement;
   dispose(): void;
 }
 
 const SUPPORTED = new Set(['640x360', '960x540']);
 const REFLECTION_PLANE_640 = 198;
 const MOTION_MASKS = [
-  { id: 'canopy', file: 'canopy-motion-mask.png', amplitude: 1.0, rate: 0.42, phase: 0.2 },
-  // These are color/ROI masks, not cutouts. Keep roots and lotus at subpixel-range force;
-  // their integer-raster displacement only reaches one native pixel in stronger wind.
-  { id: 'roots', file: 'roots-motion-mask.png', amplitude: 0.65, rate: 0.31, phase: 2.1 },
-  { id: 'lotus', file: 'lotus-motion-mask.png', amplitude: 0.65, rate: 0.68, phase: 4.4 },
+  { id: 'canopy', file: 'canopy-motion-mask.png' },
+  // Legacy roots mask is retained as an integrity sentinel and must remain empty: trunk and
+  // buttress roots are structural anchors, not wind-driven color masks.
+  { id: 'roots-anchored', file: 'roots-motion-mask.png' },
+  { id: 'lotus-flowers', file: 'lotus-motion-mask.png' },
+  { id: 'aerial-strands', file: 'aerial-root-strands-motion-mask.png' },
+  { id: 'lotus-stems', file: 'lotus-stems-motion-mask.png' },
+  { id: 'lotus-leaves', file: 'lotus-leaves-motion-mask.png' },
 ] as const;
 
 type Pixels = ImageData;
@@ -64,7 +71,7 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
   const key = `${width}x${height}`;
   if (!SUPPORTED.has(key)) throw new Error(`Direction scene supports ${[...SUPPORTED].join(' and ')} only; requested ${key}`);
   const root = `/art-direction/${key}/`;
-  const [originalPixels, environmentPixels, maskPixels, motionResults, metadataResult] = await Promise.all([
+  const [originalPixels, environmentPixels, maskPixels, motionResults, canopyUnderplateResult, metadataResult] = await Promise.all([
     loadPixels(`${root}original.png`, width, height),
     loadPixels(`${root}environment.png`, width, height),
     loadPixels(`${root}mask.png`, width, height),
@@ -76,6 +83,7 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
         throw error;
       }
     })),
+    loadPixels(`${root}canopy-underplate.png`, width, height),
     fetch(`${root}metadata.json`).then(async (response) => {
       if (response.status === 404) return undefined;
       if (!response.ok) throw new Error(`Unable to load direction metadata ${root}metadata.json: HTTP ${response.status}`);
@@ -106,9 +114,9 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
     for (let y = 0, p = 0; y < height; y++) for (let x = 0; x < width; x++, p += 4) {
       const white = isWhiteMaskPixel(layer.data, p);
       if (!white) continue;
-      // The generated masks already apply audited source-space ROIs and color gates:
-      // canopy crown, lower buttress roots above the planter, and pond-side lotus plants.
-      // They remain mask-only, so all three are displaced by at most one native pixel.
+      // Generated masks distinguish flexible material from structural anchors. Heavy roots
+      // are an empty sentinel mask; only the selected crown, pond-side lotus zone, and true
+      // hanging strands are eligible for this localized wind pass.
       motionAt[y * width + x] = m;
     }
   }
@@ -146,7 +154,11 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
         r += originalPixels.data[q]; g += originalPixels.data[q + 1]; b += originalPixels.data[q + 2]; n++;
       }
     }
-    if (n) {
+    if (motionAt[i] === 0 && canopyUnderplateResult.data[p + 3] === 255) {
+      groundPixels.data[p] = canopyUnderplateResult.data[p];
+      groundPixels.data[p + 1] = canopyUnderplateResult.data[p + 1];
+      groundPixels.data[p + 2] = canopyUnderplateResult.data[p + 2];
+    } else if (n) {
       groundPixels.data[p] = Math.round(r / n);
       groundPixels.data[p + 1] = Math.round(g / n);
       groundPixels.data[p + 2] = Math.round(b / n);
@@ -161,6 +173,11 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
   if (!foregroundContext || !objectsContext) throw new Error('Canvas 2D is unavailable');
   const foregroundFrame = foregroundContext.createImageData(width, height);
   const objectFrame = objectsContext.createImageData(width, height);
+  const lotusDestinationAt = new Int8Array(count);
+  lotusDestinationAt.fill(-1);
+  const reflectionObjects = makeCanvas(width, height);
+  const reflectionContext = reflectionObjects.getContext('2d', { willReadFrequently: true });
+  if (!reflectionContext) throw new Error('Canvas 2D is unavailable');
   const layerForPixel = (i: number): number => motionAt[i];
   let disposed = false;
   let lastObjectFrame = '';
@@ -173,31 +190,37 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
     lastObjectFrame = frameKey;
     foregroundFrame.data.fill(0);
     objectFrame.data.fill(0);
-    // Stable source-coordinate sampling, local to audited canopy/root/lotus masks.
-    // Each mask owns one gentle phase; buildings, banks, and the trunk remain fixed.
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = y * width + x;
-        const m = layerForPixel(i);
-        if (m < 0) continue;
-        const config = MOTION_MASKS[m];
-        if (!motionResults[m]) continue;
-        // Apply a gentle perceptual wind curve before native integer rasterization. The
-        // default 0.6 wind must cross the half-pixel rounding threshold for each mask;
-        // this remains capped below 1.5 native pixels at maximum wind.
-        const amplitude = config.amplitude * Math.sqrt(force / 1.5) * 1.25;
-        const wave = Math.sin(t * config.rate + config.phase + x * 0.013) * amplitude;
-        const sourceX = Math.round(x - (m === 2 ? 0 : wave));
-        const sourceY = Math.round(y - (m === 2 ? wave : Math.sin(t * config.rate + config.phase + x * 0.013) * amplitude * 0.35));
-        if (sourceX < 0 || sourceY < 0 || sourceX >= width || sourceY >= height) continue;
-        const sourceI = sourceY * width + sourceX;
-        if (motionAt[sourceI] !== m) continue;
-        const p = sourceI * 4, dst = i * 4;
-        const src = originalPixels.data;
-        foregroundFrame.data[dst] = src[p]; foregroundFrame.data[dst + 1] = src[p + 1];
-        foregroundFrame.data[dst + 2] = src[p + 2]; foregroundFrame.data[dst + 3] = 255;
-        // Reflections use all stable reflectable environment plus these exact live motion pixels.
-      }
+    lotusDestinationAt.fill(-1);
+    // Keep canopy/strand inverse sampling inside their audited eligibility masks. Lotus parts
+    // are forward-rasterized from immutable source pixels so the connected, per-row integer
+    // deformation does not erode petal/stem/leaf silhouettes. Neither path accumulates drift.
+    for (let i = 0; i < count; i++) {
+      const m = layerForPixel(i);
+      if (m < 0 || m === 2 || m === 4 || m === 5 || !motionResults[m]) continue;
+      const material: DirectionMotionMaterial | null = m === 0 ? 'canopy' : m === 3 ? 'aerial-strands' : null;
+      if (!material) continue;
+      const x = i % width, y = Math.floor(i / width);
+      const source = directionMotionSource(material, x, y, width, height, t, force);
+      if (source.x < 0 || source.y < 0 || source.x >= width || source.y >= height) continue;
+      const sourceI = source.y * width + source.x;
+      if (motionAt[sourceI] !== m) continue;
+      const p = sourceI * 4, dst = i * 4;
+      foregroundFrame.data[dst] = originalPixels.data[p]; foregroundFrame.data[dst + 1] = originalPixels.data[p + 1];
+      foregroundFrame.data[dst + 2] = originalPixels.data[p + 2]; foregroundFrame.data[dst + 3] = 255;
+    }
+    for (let sourceI = 0; sourceI < count; sourceI++) {
+      const m = layerForPixel(sourceI);
+      if (m !== 2 && m !== 4 && m !== 5) continue;
+      const material: DirectionMotionMaterial = m === 2 ? 'lotus' : m === 4 ? 'lotus-stems' : 'lotus-leaves';
+      const x = sourceI % width, y = Math.floor(sourceI / width);
+      const destination = directionMotionSource(material, x, y, width, height, t, force);
+      if (destination.x < 0 || destination.x >= width || destination.y < 0 || destination.y >= height) continue;
+      const p = sourceI * 4, dst = (destination.y * width + destination.x) * 4;
+      foregroundFrame.data[dst] = originalPixels.data[p];
+      foregroundFrame.data[dst + 1] = originalPixels.data[p + 1];
+      foregroundFrame.data[dst + 2] = originalPixels.data[p + 2];
+      foregroundFrame.data[dst + 3] = 255;
+      lotusDestinationAt[destination.y * width + destination.x] = m;
     }
     // `foreground` is reserved for true front occluders and remains transparent in this
     // master-derived pass. The returned object plate is also the visible environment layer.
@@ -222,12 +245,40 @@ export async function createDirectionScene(width = 640, height = 360): Promise<D
     return objects;
   };
 
+  let lastReflectionFrame = '';
+  const renderReflectionObjects = (time: number, wind: number): HTMLCanvasElement => {
+    const liveObjects = renderObjects(time, wind);
+    const t = Number.isFinite(time) ? time : 0;
+    const force = Math.max(0, Math.min(1.5, Number.isFinite(wind) ? wind : 0));
+    const frameKey = `${Math.floor(t * 10 + 1e-7)}:${force.toFixed(3)}`;
+    if (frameKey === lastReflectionFrame) return reflectionObjects;
+    lastReflectionFrame = frameKey;
+    reflectionContext.clearRect(0, 0, width, height);
+    reflectionContext.drawImage(liveObjects, 0, 0);
+    const reflectionFrame = reflectionContext.getImageData(0, 0, width, height);
+    for (let i = 0; i < count; i++) {
+      if (lotusDestinationAt[i] < 0) continue;
+      const x = i % width, y = Math.floor(i / width);
+      const mainPlant = x < width * 0.24;
+      const stemAnchorY = Math.round(height * (mainPlant ? 292 : 291) / 360);
+      const sourceY = lotusReflectionSourceY(y, stemAnchorY, plane, height);
+      if (sourceY < 0 || sourceY >= height) continue;
+      const sourcePixel = i * 4, targetPixel = (sourceY * width + x) * 4;
+      reflectionFrame.data[targetPixel] = objectFrame.data[sourcePixel];
+      reflectionFrame.data[targetPixel + 1] = objectFrame.data[sourcePixel + 1];
+      reflectionFrame.data[targetPixel + 2] = objectFrame.data[sourcePixel + 2];
+      reflectionFrame.data[targetPixel + 3] = objectFrame.data[sourcePixel + 3];
+    }
+    reflectionContext.putImageData(reflectionFrame, 0, 0);
+    return reflectionObjects;
+  };
+
   const camera: StudyCamera = { width, height, scale: height / 360, offsetX: 0 };
   return {
-    ground, foreground, mask, bankY, renderObjects, camera, original, metadata,
+    ground, foreground, mask, bankY, renderObjects, renderReflectionObjects, camera, original, metadata,
     dispose() {
       disposed = true;
-      for (const canvas of [original, ground, foreground, objects]) { canvas.width = 0; canvas.height = 0; }
+      for (const canvas of [original, ground, foreground, objects, reflectionObjects]) { canvas.width = 0; canvas.height = 0; }
     },
   };
 }

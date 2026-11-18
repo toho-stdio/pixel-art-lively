@@ -15,12 +15,33 @@ const terrainPath = path.join(sourceDir, '02-terrain-mask.png');
 const outRoot = path.join(root, 'public/art-direction');
 const inspectionDir = path.join(root, '.artifacts/direction/inspection');
 const sizes = [{ key: '640x360', width: 640, height: 360 }, { key: '960x540', width: 960, height: 540 }];
-// Conservative 640x360 source-coordinate ROIs. Roots stop above the planter wall; lotus
-// regions stay on the pond-side foliage above the foreground barrier. These are masks only.
-const rootSafePolygon = [[88, 100], [111, 92], [132, 113], [150, 82], [167, 105], [181, 125], [188, 151], [168, 163], [148, 137], [131, 167], [105, 161], [78, 138]];
-const lotusSafeRegions = [
-  [[70, 238], [185, 242], [185, 278], [150, 292], [110, 287], [80, 271], [70, 257]],
-  [[465, 235], [615, 237], [615, 267], [600, 284], [575, 302], [550, 300], [520, 290], [490, 275], [465, 250]],
+// Motion-only regeneration leaves canonical original/environment/water-mask files untouched.
+const motionOnly = process.argv.includes('--motion-only');
+// Conservative 640x360 source-coordinate ROIs. Motion masks are eligibility maps only,
+// never edited artwork or claims of independent sprites/cutouts.
+// Every clearly visible tree-crown zone is represented. Polygon clipping is done in
+// native scene coordinates first; a bounded foliage-material predicate then keeps masonry,
+// roof tiles, lotus pads, and moss outside these tree-only ROIs stationary.
+const canopyWindClusters = [
+  { id: 'banyan-left-crown', polygon: [[0, 0], [90, 0], [178, 0], [216, 12], [258, 7], [297, 28], [316, 62], [301, 91], [267, 111], [230, 106], [203, 126], [158, 109], [114, 128], [65, 134], [20, 126], [0, 105]] },
+  { id: 'banyan-overhead-crown', polygon: [[155, 0], [250, 0], [343, 0], [421, 0], [507, 0], [557, 18], [544, 54], [506, 76], [467, 65], [425, 92], [384, 78], [343, 100], [304, 82], [285, 54], [244, 39], [203, 52], [176, 34]] },
+  { id: 'middle-background-trees', polygon: [[203, 85], [240, 73], [276, 88], [305, 79], [337, 92], [360, 112], [380, 142], [355, 170], [316, 163], [290, 151], [262, 164], [234, 148], [212, 126]] },
+  { id: 'right-bank-background-tree', polygon: [[555, 0], [639, 0], [639, 137], [618, 151], [599, 126], [575, 110], [562, 77], [544, 47]] },
+];
+// Hand-bounded native source geometry for the clear pond-side lotus pair only. Components
+// are restricted to this one plant cluster; occluded right-bank blooms are deliberately excluded.
+const lotusHeadRegions = [
+  [[124, 267], [158, 267], [158, 284], [124, 284]],
+  [[158, 268], [172, 268], [172, 283], [158, 283]],
+];
+const lotusLeafRegions = [
+  [[94, 268], [121, 268], [126, 275], [121, 281], [97, 280], [92, 275]],
+  [[115, 277], [138, 278], [144, 283], [140, 289], [119, 290], [113, 285]],
+  [[145, 281], [177, 281], [182, 286], [178, 292], [146, 292], [141, 287]],
+];
+const lotusStemRegions = [
+  { id: 'main', polygon: [[139, 281], [143, 281], [143, 292], [139, 292]] },
+  { id: 'bud', polygon: [[162, 278], [166, 278], [166, 291], [162, 291]] },
 ];
 const insidePolygon = (x, y, polygon) => {
   let inside = false;
@@ -94,8 +115,11 @@ for (const grid of sizes) {
   const maskRgba = Buffer.alloc(pixels * 4);
   const masks = {
     'canopy-motion-mask.png': Buffer.alloc(pixels),
-    'roots-motion-mask.png': Buffer.alloc(pixels),
-    'lotus-motion-mask.png': Buffer.alloc(pixels),
+    'roots-motion-mask.png': Buffer.alloc(pixels), // heavy trunk and buttress roots are intentionally anchored
+    'aerial-root-strands-motion-mask.png': Buffer.alloc(pixels),
+    'lotus-motion-mask.png': Buffer.alloc(pixels), // retained flower/head component name
+    'lotus-stems-motion-mask.png': Buffer.alloc(pixels),
+    'lotus-leaves-motion-mask.png': Buffer.alloc(pixels),
   };
   const palette = new Set();
   let waterCount = 0;
@@ -113,27 +137,72 @@ for (const grid of sizes) {
     const nx = p % grid.width, ny = Math.floor(p / grid.width);
     const sx = nx * 640 / grid.width, sy = ny * 360 / grid.height;
     const h = rgbHue(r, g, b);
-    if (sx < 175 && sy < 150 && h >= 34 && h <= 152 && g > 32) masks['canopy-motion-mask.png'][p] = 255;
-    // Keep only warm bark pixels inside the tree's buttress/root silhouette. The lower
-    // polygon edge intentionally ends above the brick planter to reject masonry/ground.
-    if (insidePolygon(sx, sy, rootSafePolygon) && h >= 7 && h <= 38 && r > 35 && g > 18 && r > b * 1.04)
-      masks['roots-motion-mask.png'][p] = 255;
-    // Restrict foliage/flower colors to the pond-side lotus groups. These ROIs stop before
-    // the near barrier/paving; water is excluded so only visibly colored plant pixels remain.
-    const lotusZone = !water && lotusSafeRegions.some((polygon) => insidePolygon(sx, sy, polygon));
-    // Bright yellow-green leaf faces and pink petals only; the higher luminance/saturation
-    // floor rejects dull moss/stone colors that share the same broad hue family.
-    const lotusLeaf = g > r * 1.02 && g > b * 1.08 && g > 92 && g - b > 24;
-    const lotusBloom = r > g * 1.12 && r > b * 1.12 && r > 95 && b > 82;
-    if (lotusZone && (lotusLeaf || lotusBloom)) masks['lotus-motion-mask.png'][p] = 255;
+    if (canopyWindClusters.some((region) => insidePolygon(sx, sy, region.polygon))
+      && h >= 26 && h <= 158 && g > 24 && g > r * 0.72 && g > b * 0.58)
+      masks['canopy-motion-mask.png'][p] = 255;
+    // Heavy trunk/buttress pixels are not eligible for motion: that whole mass stays fixed.
+    // Select only four narrow, visually verified hanging strands under the horizontal bough.
+    const strandBands = [[275, 277, 64, 116], [312, 314, 62, 120], [319, 321, 64, 120], [337, 339, 69, 113]];
+    if (strandBands.some(([x0, x1, y0, y1]) => sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1)
+      && Math.max(r, g, b) < 110 && (r > g * 1.08 || (Math.abs(r - g) < 32 && Math.abs(g - b) < 32)) && sy > 68)
+      masks['aerial-root-strands-motion-mask.png'][p] = 255;
+    // Three individually identified parts of one clear left lotus pair. Heads use the tight
+    // pink semantic mask; stems use narrow hand-bounded strips and part-specific colors; leaves
+    // use three bounded lily-pad polygons. Priority is flower > stem > leaf, keeping masks disjoint.
+    const lotusHead = lotusHeadRegions.some((polygon) => insidePolygon(sx, sy, polygon));
+    // Include both the luminous petal fill and its darker rose-colored outline pixels; moving
+    // only the bright centers leaves a stationary dark edge/ghost behind the articulated bloom.
+    const petalColor = (r > 95 && b > 62 && r > g * 0.90 && b > g * 0.84)
+      || (r > g * 1.12 && r > b * 1.02 && r < 190);
+    if (!water && lotusHead && petalColor) masks['lotus-motion-mask.png'][p] = 255;
+    const stemIndex = lotusStemRegions.findIndex((stem) => insidePolygon(sx, sy, stem.polygon));
+    const stemColor = stemIndex === 0
+      ? ((r > g && g > b + 20 && r - g < 45 && r > 100) || (r < 80 && g < 100 && b < 100))
+      : ((g > r + 8 && g > b + 8 && g > 80 && r < 190) || (r < 65 && g < 105 && b < 100));
+    if (!water && !masks['lotus-motion-mask.png'][p] && stemIndex >= 0 && stemColor)
+      masks['lotus-stems-motion-mask.png'][p] = 255;
+    const lotusLeaf = lotusLeafRegions.some((polygon) => insidePolygon(sx, sy, polygon));
+    const greenLeaf = h >= 34 && h <= 115 && g > r * 0.82 && g > b * 0.72 && g > 45;
+    if (!water && !masks['lotus-motion-mask.png'][p] && !masks['lotus-stems-motion-mask.png'][p] && lotusLeaf && greenLeaf)
+      masks['lotus-leaves-motion-mask.png'][p] = 255;
   }
   if (palette.size > 64) throw new Error(`${grid.key}: got ${palette.size} environmental colors`);
+  // Precisely derived dynamic underplate: transparent except at moving canopy source pixels,
+  // where a 4-native-pixel ring average of immediately adjacent non-moving canonical art
+  // reconstructs the tiny cutouts without modifying the approved source/environment plates.
+  const canopyUnderplate = Buffer.alloc(pixels * 4);
+  const canopyMask = masks['canopy-motion-mask.png'];
+  for (let p = 0; p < pixels; p++) {
+    if (canopyMask[p] !== 255) continue;
+    const x = p % grid.width, y = Math.floor(p / grid.width);
+    let rr = 0, gg = 0, bb = 0, n = 0;
+    for (let radius = 1; radius <= 4 && n === 0; radius++) {
+      for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= grid.width || yy >= grid.height) continue;
+        const q = yy * grid.width + xx;
+        if (canopyMask[q] || maskRgba[q * 4] === 255) continue;
+        const s = q * 4; rr += resizedMaster.data[s]; gg += resizedMaster.data[s + 1]; bb += resizedMaster.data[s + 2]; n++;
+      }
+    }
+    const d = p * 4, source = p * 4;
+    // At outer crown edges the bounded ring can be entirely selected; retain the canonical
+    // sample as a conservative fallback rather than leaving a transparent hole in the layer.
+    canopyUnderplate[d] = n ? Math.round(rr / n) : resizedMaster.data[source];
+    canopyUnderplate[d + 1] = n ? Math.round(gg / n) : resizedMaster.data[source + 1];
+    canopyUnderplate[d + 2] = n ? Math.round(bb / n) : resizedMaster.data[source + 2];
+    canopyUnderplate[d + 3] = 255;
+  }
   const toRgba = (data) => sharp(data, { raw: { width: grid.width, height: grid.height, channels: 4 } }).png({ compressionLevel: 9 });
   await Promise.all([
-    toRgba(original).toFile(path.join(baseDir, 'original.png')),
-    toRgba(env).toFile(path.join(baseDir, 'environment.png')),
-    toRgba(maskRgba).toFile(path.join(baseDir, 'mask.png')),
+    ...(motionOnly ? [] : [
+      toRgba(original).toFile(path.join(baseDir, 'original.png')),
+      toRgba(env).toFile(path.join(baseDir, 'environment.png')),
+      toRgba(maskRgba).toFile(path.join(baseDir, 'mask.png')),
+    ]),
     ...Object.entries(masks).map(([name, data]) => sharp(data, { raw: { width: grid.width, height: grid.height, channels: 1 } }).png({ compressionLevel: 9 }).toFile(path.join(baseDir, name))),
+    toRgba(canopyUnderplate).toFile(path.join(baseDir, 'canopy-underplate.png')),
   ]);
   const counts = Object.fromEntries(Object.entries(masks).map(([name, data]) => [name, data.reduce((n, v) => n + (v === 255), 0)]));
   const meta = {
@@ -146,16 +215,21 @@ for (const grid of sizes) {
     water: { segmentation: 'terrain magenta key AND master teal/shadow chroma (G>R+11, B>R+12, abs(G-B)<43, G<175)', sourceCoverage: tealInsideGuide / sourcePixels, outputCoverage: waterCount / pixels, sourceGuidePixels: guideCount, outputPixels: waterCount },
     motion: {
       coordinateSpace: 'nearest-resampled source-master pixel coordinates, scaled directly to this grid',
-      maskSemantics: 'opaque grayscale; white=eligible source pixels, black=other; masks are conservative spatial/color segmentation, not independent cutouts',
+      maskSemantics: 'opaque grayscale; white=eligible source pixels, black=other; moving strands are narrowly selected from the source plate with fixed upper attachments; heavy roots are separately asserted anchored',
       files: Object.keys(masks),
-      canopy: 'green pixels clipped to the dense left banyan crown/trunk area (source x<175,y<150); still a mask-only source, not a detached crown sprite',
-      roots: 'warm pixels inside a compact lower buttress-root polygon ending above the planter wall; excludes outer masonry/ground but is still a mask-only source',
-      lotus: 'bright leaf/petal pixels inside two pond-side ROIs above the foreground barrier; mask only, no sprite/cutout/underpaint generated. Deform subtly in-place only or keep anchored to avoid gaps/ghosts.',
+      canopy: 'all visible foliage in four semantic zones: full banyan crown, overhead connected banyan crown, middle background tree crowns, and right-bank background tree; polygon ROIs plus constrained foliage hue/material test exclude roof, masonry, moss, and lotus pads; trunk/boughs remain fixed',
+      canopyUnderplate: 'canopy-underplate.png is a native-grid, transparent-outside/opaque-inside 4-pixel-ring reconstruction derived from adjacent nonmoving canonical samples; used only behind moving foliage cutouts',
+      windResponse: 'tree foliage uses a 0.68 rad/s travelling regional phase and up to 3.74 native pixels at wind 1.5 (2.05px peak at default wind 0.6); lotus uses a 0.86 rad/s articulation cycle with 5.50px flower, 5.06px stem and 4.84px leaf peak at wind 1.5 (3.10/2.85/2.72px at default 0.6). Integer raster, shared regional field with small phase lags, wind clamped 0..1.5; zero wind exactly stationary.',
+      roots: 'heavy trunk and buttress roots remain stationary; roots-motion-mask.png is empty by design',
+      aerialRootStrands: 'four narrow, individually bounded dark hanging strands selected from canonical plate; upper attachment rows are pinned during wind deformation',
+      lotus: 'pink flower and bud components of one clear left lotus rig; attached to individually selected stem components with small constrained distal lag.',
+      lotusStems: 'two narrow geometry-and-color selected stem strips for the clear main flower and bud, pinned at lower visible shoreline/leaf attachment rows (native source y≈292 and y≈291); motion never reaches shore pixels.',
+      lotusLeaves: 'three bounded green leaf/pad components in the same clear left lotus group; coherent low-amplitude sway with shared wind and slight phase lag. Occluded/right-bank plants excluded.',
 
       reflectionAnchors: { rearBankY: Math.round(grid.height * 198 / 360), pondLeftShore: 'follow white/black mask boundary', pondRightShore: 'follow white/black mask boundary', lotusForeground: 'lower-side pond-edge groups, mask only' }
     },
     reflectionPlanes: [{ id: 'rear-pond-bank', y: Math.round(grid.height * 198 / 360), xStart: Math.round(grid.width * 200 / 640), xEnd: grid.width - 1 }],
-    motionMaskCoverage: Object.fromEntries(Object.entries(counts).map(([name, n]) => [name, n / pixels])),
+    motionMaskCoverage: { ...Object.fromEntries(Object.entries(counts).map(([name, n]) => [name, n / pixels])), 'canopy-underplate.png': canopyUnderplate.reduce((n, v, i) => n + (i % 4 === 3 && v === 255), 0) / pixels },
     sourceHashes: { masterSha256: masterSha, terrainGuideSha256: guideSha }
   };
   await writeFile(path.join(baseDir, 'metadata.json'), JSON.stringify(meta, null, 2) + '\n');
@@ -178,7 +252,7 @@ for (const grid of sizes) {
     else palette.add((env[i] << 16) | (env[i + 1] << 8) | env[i + 2]);
   }
   if (palette.size > 64) throw new Error(`${grid.key}: emitted environment has ${palette.size} colors`);
-  for (const name of Object.keys({ 'canopy-motion-mask.png': 1, 'roots-motion-mask.png': 1, 'lotus-motion-mask.png': 1 })) {
+  for (const name of Object.keys({ 'canopy-motion-mask.png': 1, 'roots-motion-mask.png': 1, 'aerial-root-strands-motion-mask.png': 1, 'lotus-motion-mask.png': 1 })) {
     const data = await sharp(path.join(dir, name)).greyscale().raw().toBuffer();
     if (data.length !== n || data.some(v => v !== 0 && v !== 255)) throw new Error(`${grid.key}: ${name} is not native-sized binary mask`);
   }

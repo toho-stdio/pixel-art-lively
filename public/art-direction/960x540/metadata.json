@@ -49,15 +49,23 @@
   },
   "motion": {
     "coordinateSpace": "nearest-resampled source-master pixel coordinates, scaled directly to this grid",
-    "maskSemantics": "opaque grayscale; white=eligible source pixels, black=other; masks are conservative spatial/color segmentation, not independent cutouts",
+    "maskSemantics": "opaque grayscale; white=eligible source pixels, black=other; moving strands are narrowly selected from the source plate with fixed upper attachments; heavy roots are separately asserted anchored",
     "files": [
       "canopy-motion-mask.png",
       "roots-motion-mask.png",
-      "lotus-motion-mask.png"
+      "aerial-root-strands-motion-mask.png",
+      "lotus-motion-mask.png",
+      "lotus-stems-motion-mask.png",
+      "lotus-leaves-motion-mask.png"
     ],
-    "canopy": "green pixels clipped to the dense left banyan crown/trunk area (source x<175,y<150); still a mask-only source, not a detached crown sprite",
-    "roots": "warm pixels inside a compact lower buttress-root polygon ending above the planter wall; excludes outer masonry/ground but is still a mask-only source",
-    "lotus": "bright leaf/petal pixels inside two pond-side ROIs above the foreground barrier; mask only, no sprite/cutout/underpaint generated. Deform subtly in-place only or keep anchored to avoid gaps/ghosts.",
+    "canopy": "all visible foliage in four semantic zones: full banyan crown, overhead connected banyan crown, middle background tree crowns, and right-bank background tree; polygon ROIs plus constrained foliage hue/material test exclude roof, masonry, moss, and lotus pads; trunk/boughs remain fixed",
+    "canopyUnderplate": "canopy-underplate.png is a native-grid, transparent-outside/opaque-inside 4-pixel-ring reconstruction derived from adjacent nonmoving canonical samples; used only behind moving foliage cutouts",
+    "windResponse": "tree foliage uses a 0.68 rad/s travelling regional phase and up to 3.74 native pixels at wind 1.5 (2.05px peak at default wind 0.6); lotus uses a 0.86 rad/s articulation cycle with 5.50px flower, 5.06px stem and 4.84px leaf peak at wind 1.5 (3.10/2.85/2.72px at default 0.6). Integer raster, shared regional field with small phase lags, wind clamped 0..1.5; zero wind exactly stationary.",
+    "roots": "heavy trunk and buttress roots remain stationary; roots-motion-mask.png is empty by design",
+    "aerialRootStrands": "four narrow, individually bounded dark hanging strands selected from canonical plate; upper attachment rows are pinned during wind deformation",
+    "lotus": "pink flower and bud components of one clear left lotus rig; attached to individually selected stem components with small constrained distal lag.",
+    "lotusStems": "two narrow geometry-and-color selected stem strips for the clear main flower and bud, pinned at lower visible shoreline/leaf attachment rows (native source y≈292 and y≈291); motion never reaches shore pixels.",
+    "lotusLeaves": "three bounded green leaf/pad components in the same clear left lotus group; coherent low-amplitude sway with shared wind and slight phase lag. Occluded/right-bank plants excluded.",
     "reflectionAnchors": {
       "rearBankY": 297,
       "pondLeftShore": "follow white/black mask boundary",
@@ -74,9 +82,13 @@
     }
   ],
   "motionMaskCoverage": {
-    "canopy-motion-mask.png": 0.07793016975308642,
-    "roots-motion-mask.png": 0.01226658950617284,
-    "lotus-motion-mask.png": 0.009888117283950617
+    "canopy-motion-mask.png": 0.21124421296296297,
+    "roots-motion-mask.png": 0,
+    "aerial-root-strands-motion-mask.png": 0.00044367283950617285,
+    "lotus-motion-mask.png": 0.0013792438271604938,
+    "lotus-stems-motion-mask.png": 0.00011381172839506173,
+    "lotus-leaves-motion-mask.png": 0.001871141975308642,
+    "canopy-underplate.png": 0.21124421296296297
   },
   "sourceHashes": {
     "masterSha256": "da36518a45bea8cfb4ad4f33bd69ffce546c3a012e639047648af3c22e68028a",
